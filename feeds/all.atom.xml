@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>機械学習と数理に関するメモ</title><link href="kaffelun.github.io/" rel="alternate"></link><link href="kaffelun.github.io/feeds/all.atom.xml" rel="self"></link><id>kaffelun.github.io/</id><updated>2020-12-17T00:00:00+09:00</updated><entry><title>Score-based model (1) スコアマッチング</title><link href="kaffelun.github.io/posts/2020/12/17/score_matching_01/" rel="alternate"></link><published>2020-12-17T00:00:00+09:00</published><updated>2020-12-17T00:00:00+09:00</updated><author><name>kaffelun</name></author><id>tag:None,2020-12-17:kaffelun.github.io/posts/2020/12/17/score_matching_01/</id><summary type="html">&lt;p&gt;深層生成モデルにはGANやVAE，Flowといったものがありますが，今年に入ってからスコアベースの深層生成モデルが高い性能を発揮し注目されています．
+特に Denoising Diffusion Probabilistic Models (&lt;span class="caps"&gt;DDPM&lt;/span&gt;) &lt;a href="#ho2020denoising" id="ref-ho2020denoising-1"&gt;[1]&lt;/a&gt; は画像生成における評価指標である &lt;span class="caps"&gt;FID&lt;/span&gt; において長らく SoTA の実力を誇っていました．2020年11月時点では &lt;span class="caps"&gt;NSCN&lt;/span&gt;++ &lt;a href="#song2020score" id="ref-song2020score-1"&gt;[2]&lt;/a&gt; という，確率微分方程式として解釈したスコアベース生成モデルが SoTA になっています．&lt;/p&gt;
+&lt;p&gt;そこで，今回から数回に分けてスコアベースの深層生成モデルの論文についていくつか紹介していこうと思います．&lt;/p&gt;
+&lt;p&gt;今回は「スコアマッチングについて」です．&lt;/p&gt;
+</summary><content type="html">&lt;p&gt;深層生成モデルにはGANやVAE，Flowといったものがありますが，今年に入ってからスコアベースの深層生成モデルが高い性能を発揮し注目されています．
+特に Denoising Diffusion Probabilistic Models (&lt;span class="caps"&gt;DDPM&lt;/span&gt;) &lt;a href='#ho2020denoising' id='ref-ho2020denoising-1'&gt;[1]&lt;/a&gt; は画像生成における評価指標である &lt;span class="caps"&gt;FID&lt;/span&gt; において長らく SoTA の実力を誇っていました．2020年11月時点では &lt;span class="caps"&gt;NSCN&lt;/span&gt;++ &lt;a href='#song2020score' id='ref-song2020score-1'&gt;[2]&lt;/a&gt; という，確率微分方程式として解釈したスコアベース生成モデルが SoTA&amp;nbsp;になっています．&lt;/p&gt;
+&lt;p&gt;そこで，今回から数回に分けてスコアベースの深層生成モデルの論文についていくつか紹介していこうと思います．&lt;/p&gt;
+&lt;p&gt;今回は「スコアマッチングについて」です．&lt;/p&gt;
+
+
+&lt;h2&gt;記法について&lt;/h2&gt;
+&lt;p&gt;ノルム &lt;span class="math"&gt;\(\norm{\cdot}\)&lt;/span&gt; は特に断らない限りL2ノルム &lt;span class="math"&gt;\(\norm{\cdot}_2\)&lt;/span&gt; を表すものとする．
+内積は &lt;span class="math"&gt;\(\ang{\cdot ~ . \cdot}\)&lt;/span&gt;&amp;nbsp;で表す．&lt;/p&gt;
+&lt;h2&gt;はじめに&lt;/h2&gt;
+&lt;p&gt;はじめに注意しておきたいこととして，ここで紹介するスコアマッチングは元々は生成モデルではなく&lt;strong&gt;分布推定&lt;/strong&gt;を目的とした手法だということがある．&lt;/p&gt;
+&lt;p&gt;次回から登場する&lt;strong&gt;生成モデル&lt;/strong&gt;では，パラメータ &lt;span class="math"&gt;\(\theta\)&lt;/span&gt; でモデリングされた確率モデル &lt;span class="math"&gt;\(p(x ; \theta)\)&lt;/span&gt; から &lt;span class="math"&gt;\(x\)&lt;/span&gt; をサンプリングすることが目標だが，&lt;strong&gt;分布推定&lt;/strong&gt;では入力 &lt;span class="math"&gt;\(x\)&lt;/span&gt; に対して &lt;span class="math"&gt;\(x\)&lt;/span&gt; における確率密度関数 &lt;span class="math"&gt;\(p(x ; \theta)\)&lt;/span&gt; の値自体（つまり区間 &lt;span class="math"&gt;\([0,1]\)&lt;/span&gt;&amp;nbsp;内の値）を出力することが目標となる．&lt;/p&gt;
+&lt;p&gt;スコアベースの生成モデルに最低限必要な知識は Explicit Score Matching とその変化形の Denoising Score Matching&amp;nbsp;だけなので，分布推定に興味のない方は後半部分は読み飛ばしてもらっても構わない．&lt;/p&gt;
+&lt;h2&gt;導入&lt;/h2&gt;
+&lt;p&gt;与えられたデータセット &lt;span class="math"&gt;\(x_1, \ldots, x_n \in \R^{D_X}\)&lt;/span&gt; がしたがう真の分布 &lt;span class="math"&gt;\(p(x)\)&lt;/span&gt; を，パラメータ &lt;span class="math"&gt;\(\theta\)&lt;/span&gt;&amp;nbsp;による確率モデルによって推定することを考える．&lt;/p&gt;
+&lt;p&gt;この確率モデルの尤度 &lt;span class="math"&gt;\(p(x ; \theta)\)&lt;/span&gt;&amp;nbsp;に対して，以下のような変形をする．&lt;/p&gt;
+&lt;div class="math"&gt;$$p(x ; \theta) = \frac{\exp(-E(x ; \theta))}{Z(\theta)}$$&lt;/div&gt;
+&lt;p&gt;&lt;span class="math"&gt;\(E(x ; \theta)\)&lt;/span&gt; はエネルギー関数と呼ばれる関数である．
+&lt;span class="math"&gt;\(Z(\theta) = \int \exp(-E(x ; \theta)) \d x\)&lt;/span&gt; は分配関数と呼ばれ， &lt;span class="math"&gt;\(p(x ; \theta)\)&lt;/span&gt; が &lt;span class="math"&gt;\(x\)&lt;/span&gt; で積分して &lt;span class="math"&gt;\(1\)&lt;/span&gt;&amp;nbsp;になるための正規化定数の役割をする．&lt;/p&gt;
+&lt;p&gt;ただ，このままでは &lt;span class="math"&gt;\(\theta\)&lt;/span&gt; について最適化するときに &lt;span class="math"&gt;\(Z(\theta)\)&lt;/span&gt; の積分を毎回計算する必要があり，一般的にこの計算は非常に難しく扱いにくいという問題がある．そこでこの積分計算を回避するために，スコアベースのモデルでは対数尤度の &lt;span class="math"&gt;\(x\)&lt;/span&gt;&amp;nbsp;に関する勾配
+&lt;/p&gt;
+&lt;div class="math"&gt;$$s(x ; \theta) = \nabla_x\log p(x ; \theta) = -\nabla_x E(x ; \theta) = \par{\rd{\log p(x ; \theta)}{x_i}}_{i=1}^{D_X}$$&lt;/div&gt;
+&lt;p&gt;
+について考える．これを(スタインの)スコア関数という．&lt;sup id="fnref:5"&gt;&lt;a class="footnote-ref" href="#fn:5"&gt;1&lt;/a&gt;&lt;/sup&gt;
+スコア関数は &lt;span class="math"&gt;\(Z(\theta)\)&lt;/span&gt;&amp;nbsp;が勾配を取る操作によって消えているので扱いやすいというメリットがある．&lt;/p&gt;
+&lt;h2&gt;様々なスコア推定手法&lt;/h2&gt;
+&lt;p&gt;以下では，ニューラルネットなどでモデリングされた &lt;span class="math"&gt;\(p(x ; \theta)\)&lt;/span&gt;&amp;nbsp;を求めるためにスコア関数を用いる手法を４つ紹介する．&lt;/p&gt;
+&lt;h3&gt;Explicit Score&amp;nbsp;Matching&lt;/h3&gt;
+&lt;p&gt;Explicit Score Matching (&lt;span class="caps"&gt;ESM&lt;/span&gt;:陽的スコアマッチング)&amp;nbsp;では，スコア関数とデータ分布の勾配との二乗誤差の期待値
+&lt;/p&gt;
+&lt;div class="math"&gt;$$\mathcal{J}_{ESM}(\theta) = \ex_{p(x)}\bra{\norm{s(x ; \theta) - \nabla_x \log p(x)}^2}$$&lt;/div&gt;
+&lt;p&gt;
+を目的関数とし，これを &lt;span class="math"&gt;\(\theta\)&lt;/span&gt; について最小化する．
+この最適化によって任意の &lt;span class="math"&gt;\(x\)&lt;/span&gt; について &lt;span class="math"&gt;\(s(x ; \theta) = \nabla_x \log p(x)\)&lt;/span&gt; を達成したとすると， &lt;span class="math"&gt;\(\log p(x ; \theta) = \log p(x) + C\)&lt;/span&gt; と表せるので， &lt;span class="math"&gt;\(p(x ; \theta) = e^C p(x)\)&lt;/span&gt; となる．これを &lt;span class="math"&gt;\(x\)&lt;/span&gt; で積分すると &lt;span class="math"&gt;\(C = 0\)&lt;/span&gt; だから， &lt;span class="math"&gt;\(p(x ; \theta) = p(x)\)&lt;/span&gt;&amp;nbsp;となり，分布が求められたことになる．&lt;/p&gt;
+&lt;h3&gt;Denoising Score&amp;nbsp;Matching&lt;/h3&gt;
+&lt;p&gt;Explicit Score Matching の目的関数 &lt;span class="math"&gt;\(\mathcal{J}_{ESM}(\theta)\)&lt;/span&gt; に含まれる項 &lt;span class="math"&gt;\(\nabla_x \log p(x)\)&lt;/span&gt; はデータ分布についての勾配であり，これは実際には計算することができない．この問題を，Denoising Score Matching (&lt;span class="caps"&gt;DSM&lt;/span&gt;) では &lt;span class="math"&gt;\(p(x)\)&lt;/span&gt; を平滑化させた分布 &lt;span class="math"&gt;\(p(\tilde x; \theta)\)&lt;/span&gt;&amp;nbsp;を考えることによって解決する．&lt;/p&gt;
+&lt;p&gt;まず， &lt;span class="math"&gt;\(x\)&lt;/span&gt; を分散 &lt;span class="math"&gt;\(\sigma^2\)&lt;/span&gt; のガウス分布で平滑化&lt;sup id="fnref:1"&gt;&lt;a class="footnote-ref" href="#fn:1"&gt;2&lt;/a&gt;&lt;/sup&gt;させた &lt;span class="math"&gt;\(\tilde x\)&lt;/span&gt;&amp;nbsp;の分布を&lt;/p&gt;
+&lt;div class="math"&gt;$$p(\tilde x | x; \sigma) = \ndist(x, \sigma^2I)$$&lt;/div&gt;
+&lt;p&gt;
+とし， &lt;span class="math"&gt;\(x\)&lt;/span&gt;&amp;nbsp;を周辺化により消去した分布を
+&lt;/p&gt;
+&lt;div class="math"&gt;$$p(\tilde x ; \sigma) = \int_{\R^{D_X}} p(\tilde x | x; \sigma)p(x) \d x$$&lt;/div&gt;
+&lt;p&gt;
+とする． 元の分布の代わりにこの分布での陽的スコアマッチングを考えると，スコア関数を &lt;span class="math"&gt;\(s(\tilde x ; \theta) = \nabla_{\tilde x} p(\tilde x ; \sigma)\)&lt;/span&gt;&amp;nbsp;として，目的関数は&lt;/p&gt;
+&lt;div class="math"&gt;$$ \mathcal{J}_{ESM_{\sigma}}(\theta) = \ex_{p(\tilde x ; \sigma)} \bra{\frac{1}{2}\norm{s(\tilde x ; \theta) - \nabla_{\tilde x} \log p(\tilde x ; \sigma)}^2}$$&lt;/div&gt;
+&lt;p&gt;となる．しかしこのままでは依然として &lt;span class="math"&gt;\(\nabla_{\tilde x} \log p(\tilde x ; \sigma)\)&lt;/span&gt; が計算できないので問題は解決していない．そこで， &lt;span class="math"&gt;\(\tilde x\)&lt;/span&gt; だけでなく &lt;span class="math"&gt;\(x\)&lt;/span&gt;&amp;nbsp;も期待値の式に含めるように式変形をすることでDSMの目的関数が得られる．&lt;/p&gt;
+&lt;div class="math"&gt;$$\mathcal{J}_{DSM}(\theta) = \ex_{p(\tilde x | x; \sigma) \\ p(x)} \bra{\frac{1}{2}\norm{s(\tilde x ; \theta) - \nabla_{\tilde x} \log p(\tilde x | x ; \sigma)}^2}$$&lt;/div&gt;
+&lt;p&gt;DSMの目的関数では勾配 &lt;span class="math"&gt;\(\nabla_{\tilde x}\)&lt;/span&gt;&amp;nbsp;を含む項がガウス分布になっているので解析的に求めることができて，&lt;/p&gt;
+&lt;div class="math"&gt;$$\mathcal{J}_{DSM}(\theta) = \ex_{p(\tilde x | x; \sigma) \\ p(x)} \bra{\frac{1}{2}\norm{s(\tilde x ; \theta) + \frac{\tilde x - x}{\sigma^2}}^2}$$&lt;/div&gt;
+&lt;p&gt;となる．&lt;/p&gt;
+&lt;div class="th-title"&gt; 定理 1.1 &lt;/div&gt;
+&lt;div class="th-box"&gt;
+&lt;p&gt;&lt;span class="math"&gt;\(\theta\)&lt;/span&gt; に依存しない定数 &lt;span class="math"&gt;\(C\)&lt;/span&gt; が存在して
+&lt;div class="math"&gt;$$\mathcal{J}_{ESM_{\sigma}}(\theta) = \mathcal{J}_{DSM}(\theta) + C$$&lt;/div&gt;
+が成り立つ．&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class="prf-box"&gt;
+&lt;p&gt;&lt;span class="prf-title"&gt;証明&lt;/span&gt;&lt;/p&gt;
+&lt;p&gt;ノルムを展開し，
+&lt;div class="math"&gt;$$ \mathcal{J}_{ESM_{\sigma}}(\theta) = \ex_{p(\tilde x ; \sigma)} \bra{\frac{1}{2} \norm{s(\tilde x ; \theta)}^2 + \frac{1}{2} \norm{\nabla_{\tilde x} \log p(\tilde x ; \sigma)}^2 - \ang{s(\tilde x ; \theta) ~. \nabla_{\tilde x} \log p(\tilde x ; \sigma)}}$$&lt;/div&gt;
+&lt;/p&gt;
+&lt;p&gt;右辺の第１項は &lt;span class="math"&gt;\(\mathcal{J}_{DSM}(\theta)\)&lt;/span&gt; のノルムを展開したときに共通で，第２項は &lt;span class="math"&gt;\(\theta\)&lt;/span&gt;&amp;nbsp;に関しては定数であるから，第３項について考える．&lt;/p&gt;
+&lt;p&gt;第３項の期待値の中身を &lt;span class="math"&gt;\(S(\tilde x ; \theta) = \ang{s(\tilde x ; \theta) ~. \nabla_{\tilde x} \log p(\tilde x ; \sigma)}\)&lt;/span&gt;&amp;nbsp;とおくと，&lt;/p&gt;
+&lt;p&gt;
+&lt;div class="math"&gt;$$S(\tilde x ; \theta) = \frac{1}{p(\tilde x ; \sigma)} \ang{s(\tilde x ; \theta) ~. \nabla_{\tilde x} p(\tilde x ; \sigma)}$$&lt;/div&gt;
+であり
+&lt;div class="math"&gt;$$\begin{aligned}\nabla_{\tilde x} p(\tilde x ; \sigma) &amp;amp;= \nabla_{\tilde x} \par{\int_{\R^{D_X}} p(\tilde x | x; \sigma)p(x)\d x}  \\ &amp;amp;= \int_{\R^{D_X}} \nabla_{\tilde x} \par{p(\tilde x | x; \sigma)}p(x)\d x \\ &amp;amp;= \int_{\R^{D_X}} \nabla_{\tilde x} \par{ \log p(\tilde x | x; \sigma)}p(\tilde x | x; \sigma)p(x)\d x \end{aligned}$$&lt;/div&gt;
+だから，内積の線形性より
+&lt;div class="math"&gt;$$\begin{aligned}\ex_{p(\tilde x ; \sigma)} \bra{S(\tilde x ; \theta)} &amp;amp;= \int_{\R^{D_X}} S(\tilde x ; \theta) p(\tilde x ; \sigma) \d \tilde x \\ &amp;amp;= \ex_{p(\tilde x | x; \sigma), p(x)} \bra{\frac{1}{p(\tilde x ; \sigma)} \ang{s(\tilde x ; \theta) ~. \nabla_{\tilde x} \log p(\tilde x | x; \sigma)}} \end{aligned}$$&lt;/div&gt;
+&lt;/p&gt;
+&lt;p&gt;これと， &lt;span class="math"&gt;\(\frac{1}{2} \norm{\nabla_{\tilde x} \log p(\tilde x ; \sigma)}^2\)&lt;/span&gt; が &lt;span class="math"&gt;\(\theta\)&lt;/span&gt; に関して定数であることから &lt;span class="math"&gt;\(\mathcal{J}_{ESM_{\sigma}}(\theta) = \mathcal{J}_{DSM}(\theta) + C\)&lt;/span&gt;&amp;nbsp;となる．&lt;/p&gt;
+&lt;/div&gt;
+&lt;h3&gt;Implicit Score&amp;nbsp;Matching&lt;/h3&gt;
+&lt;p&gt;Explicit Score Matching&amp;nbsp;の目的関数
+&lt;/p&gt;
+&lt;div class="math"&gt;$$\mathcal{J}_{\mathrm{ESM}}(\theta) = \ex_{x \sim p(X)}\bra{\norm{s(x ; \theta) - \nabla_x \log p(x)}^2}$$&lt;/div&gt;
+&lt;p&gt;
+に含まれる &lt;span class="math"&gt;\(\nabla_x \log p(x)\)&lt;/span&gt; が計算できないという問題をDenoising Score Matching では平滑化した近似分布を用いることによって解決したが，これを行わず単に式変形で消したものが Implicit Score Matching (&lt;span class="caps"&gt;ISM&lt;/span&gt;:陰的スコアマッチング)&amp;nbsp;である．その目的関数は次のとおりである．&lt;/p&gt;
+&lt;div class="math"&gt;$$ \mathcal{J}_{ISM}(\theta) = \ex_{x \sim p(X)} \bra{\frac{1}{2}\norm{s(x ; \theta)}^2 + \tr\par{\nabla_x s(x ; \theta)^\tp}}$$&lt;/div&gt;
+&lt;p&gt;ただし
+&lt;/p&gt;
+&lt;div class="math"&gt;$$\nabla_x s(x ; \theta)^\tp = \nabla_x\nabla_x^\tp \log p(x ; \theta) = \par{\frac{\partial^2}{\partial x_i \partial x_j} \log p(x ; \theta)}_{(i,j)}$$&lt;/div&gt;
+&lt;p&gt;
+は対数尤度 &lt;span class="math"&gt;\(\log p(x ; \theta)\)&lt;/span&gt;&amp;nbsp;のヘッセ行列である．&lt;/p&gt;
+&lt;p&gt;&lt;span class="math"&gt;\(\mathcal{J}_{ISM}(\theta)\)&lt;/span&gt; は対数尤度の勾配 &lt;span class="math"&gt;\(\nabla_x \log p(x ; \theta)\)&lt;/span&gt; やヘッセ行列 &lt;span class="math"&gt;\(\nabla_x\nabla_x^\tp \log p(x ; \theta)\)&lt;/span&gt;&amp;nbsp;を自動微分によって求めることで計算できる．&lt;/p&gt;
+&lt;div class="th-title"&gt; 定理 1.2 &lt;/div&gt;
+&lt;div class="th-box"&gt;
+&lt;p&gt;&lt;span class="math"&gt;\(\theta\)&lt;/span&gt; に依存しない定数 &lt;span class="math"&gt;\(C\)&lt;/span&gt; が存在して
+&lt;div class="math"&gt;$$\mathcal{J}_{ESM}(\theta) = \mathcal{J}_{ISM}(\theta) + C$$&lt;/div&gt;
+が，適切な条件&lt;sup id="fnref:4"&gt;&lt;a class="footnote-ref" href="#fn:4"&gt;3&lt;/a&gt;&lt;/sup&gt;のもと成り立つ．&lt;/p&gt;
+&lt;/div&gt;
+&lt;div class="prf-box"&gt;
+&lt;p&gt;&lt;span class="prf-title"&gt;証明&lt;/span&gt;&lt;/p&gt;
+&lt;p&gt;ノルムを展開し，
+&lt;div class="math"&gt;$$ \mathcal{J}_{ESM}(\theta) = \ex \bra{\frac{1}{2} \norm{s(x ; \theta)}^2 + \frac{1}{2} \norm{\nabla_x \log p(x)}^2 - \ang{s(x ; \theta) . \nabla_x \log p(x)}}$$&lt;/div&gt;
+定理1.1の場合と同様の理由により，第３項についてのみ考えればよい． &lt;span class="math"&gt;\(s(x; \theta)\)&lt;/span&gt;&amp;nbsp;はベクトルであることに注意して，&lt;/p&gt;
+&lt;p&gt;
+&lt;div class="math"&gt;$$\begin{aligned}\ex \bra{\ang{s(x ; \theta) . \nabla_x \log p(x)}} &amp;amp;= \ex \bra{\ang{s(x ; \theta) . \frac{\nabla_x p(x)}{p(x)}}} \\ &amp;amp;= \int_{\R^{D_X}} \ang{s(x ; \theta) . \nabla_x p(x)} \d x \\ &amp;amp;= \int_{\R^{D_X}}\nabla_x \cdot (s(x ; \theta)p(x)) \d x - \int_{\R^{D_X}} \tr(\nabla_x s(x ; \theta)^\tp) p(x) \d x \end{aligned}$$&lt;/div&gt;
+&lt;/p&gt;
+&lt;p&gt;３つ目の等号では積の偏微分
+&lt;div class="math"&gt;$$s(x ; \theta)_i \rd{p(x)}{x_i} + \rd{s(x ; \theta)_i}{x_i}p(x) = \rd{}{x_i}\par{p(x)s(x ; \theta)_i}$$&lt;/div&gt;
+を用いて変形した．また &lt;span class="math"&gt;\(\nabla_x\cdot (s(x ; \theta)p(x)) = \mathrm{div}(s(x ; \theta)p(x))\)&lt;/span&gt;&amp;nbsp;はベクトルの発散を表す．&lt;/p&gt;
+&lt;p&gt;ここで，ガウスの発散定理の多次元版を使うと
+&lt;div class="math"&gt;$$\int_{V} \nabla_x \cdot (s(x ; \theta)p(x)) \d x = \int_{\partial V} (s(x ; \theta)p(x)) \cdot \bm n \d S$$&lt;/div&gt;
+と表せる．したがって &lt;span class="math"&gt;\(\lim\limits_{\norm{x}\to\infty} s(x ; \theta)p(x) = 0\)&lt;/span&gt; ならばこの積分は &lt;span class="math"&gt;\(0\)&lt;/span&gt; になるので， &lt;span class="math"&gt;\(\mathcal{J}_{ISM}(\theta)\)&lt;/span&gt; と &lt;span class="math"&gt;\(\mathcal{J}_{ESM}(\theta)\)&lt;/span&gt;&amp;nbsp;の等価性が証明された．&lt;/p&gt;
+&lt;/div&gt;
+&lt;h3&gt;Sliced Score&amp;nbsp;Matching&lt;/h3&gt;
+&lt;p&gt;Implicit Score Matching の目的関数には，対数尤度のヘッセ行列のトレース &lt;span class="math"&gt;\(\tr\par{\nabla_x \nabla_x^\tp \log p(x ; \theta)}\)&lt;/span&gt; が含まれるが，これは計算コストが高い．
+例えば &lt;span class="math"&gt;\(p(x ; \theta)\)&lt;/span&gt; が隠れ変数 &lt;span class="math"&gt;\(H\)&lt;/span&gt; 個，重みパラメータ数 &lt;span class="math"&gt;\(W\)&lt;/span&gt; 個のニューラルネットワーク &lt;span class="math"&gt;\(f\)&lt;/span&gt; を用いて &lt;span class="math"&gt;\(p(x ; \theta) = f(x;\theta)\)&lt;/span&gt; のようにモデリングされている場合，パラメータを一回更新するのに必要な計算量は &lt;span class="math"&gt;\(O(WHD_X^2)\)&lt;/span&gt; となる&lt;sup id="fnref:2"&gt;&lt;a class="footnote-ref" href="#fn:2"&gt;4&lt;/a&gt;&lt;/sup&gt;が，これは入力の次元 &lt;span class="math"&gt;\(D_X\)&lt;/span&gt;&amp;nbsp;が大きくなると計算が難しい．&lt;/p&gt;
+&lt;p&gt;そこで Sliced Score Matching (&lt;span class="caps"&gt;SSM&lt;/span&gt;)&amp;nbsp;では次のような目的関数を考える．&lt;/p&gt;
+&lt;div class="math"&gt;$$\ex_{p(v),p(x)} \bra{\frac{1}{2}\par{v^\tp\par{s(x ; \theta) - \nabla_x \log p(x)}}^2}$$&lt;/div&gt;
+&lt;p&gt;これはランダムな方向 &lt;span class="math"&gt;\(v\)&lt;/span&gt; に射影したスコア関数の二乗誤差であり， &lt;span class="math"&gt;\(v\)&lt;/span&gt; の分布 &lt;span class="math"&gt;\(p(v)\)&lt;/span&gt; が標準正規分布 &lt;span class="math"&gt;\(\ndist(0, I)\)&lt;/span&gt; やラデマッハ分布 &lt;span class="math"&gt;\(p(v_i) = \begin{cases}1/2 &amp;amp; (v_i = \pm 1) \\ 0 &amp;amp; (\text{otherwise}) \end{cases}\)&lt;/span&gt; などであれば &lt;span class="math"&gt;\(\mathcal{J}_{ESM}(\theta)\)&lt;/span&gt; と等価な目的関数となる．これを Implicit Score Matching&amp;nbsp;と同様にして変形し，対数尤度のヘッセ行列を用いて表すと，&lt;/p&gt;
+&lt;div class="math"&gt;$$\mathcal{J}_{SSM}(\theta) = \ex_{p(v), p(x)}  \bra{v^\tp \nabla_x (s(x ; \theta)^\tp v) + \frac{1}{2}(v^\tp s(x ; \theta))^2}$$&lt;/div&gt;
+&lt;p&gt;となる&lt;sup id="fnref:3"&gt;&lt;a class="footnote-ref" href="#fn:3"&gt;5&lt;/a&gt;&lt;/sup&gt;．この式でトレースの代わりに登場する &lt;span class="math"&gt;\(v^\tp \nabla_x (s(x ; \theta)^\tp v)\)&lt;/span&gt; は &lt;span class="math"&gt;\(O(WHD_X)\)&lt;/span&gt; で計算できるので，実際に &lt;span class="math"&gt;\(v\)&lt;/span&gt; を &lt;span class="math"&gt;\(M\)&lt;/span&gt; 個サンプリングしたとしても計算量は &lt;span class="math"&gt;\(O(MWHD_X)\)&lt;/span&gt; であり， &lt;span class="math"&gt;\(M \ll D_X\)&lt;/span&gt;&amp;nbsp;であれば十分高速になる．&lt;/p&gt;
+&lt;h2&gt;まとめ&lt;/h2&gt;
+&lt;p&gt;今回はスコアマッチングの源流となる &lt;span class="caps"&gt;ESM&lt;/span&gt; から，平滑化した分布を考えることで目的関数を計算可能にした &lt;span class="caps"&gt;DSM&lt;/span&gt; と，式変形により目的関数を計算可能にした &lt;span class="caps"&gt;ISM&lt;/span&gt;，そしてその計算量を削減した &lt;span class="caps"&gt;SSM&lt;/span&gt;&amp;nbsp;について扱いました．&lt;/p&gt;
+&lt;p&gt;ここで紹介した手法以外にも，勾配計算を&lt;a href="https://ja.wikipedia.org/wiki/%E6%9C%89%E9%99%90%E5%B7%AE%E5%88%86"&gt;有限差分&lt;/a&gt;で近似する Finite-difference Score Matching &lt;a href='#pang2020efficient' id='ref-pang2020efficient-1'&gt;[3]&lt;/a&gt;&amp;nbsp;など様々なバリエーションがありますが，今回は割愛しました．&lt;/p&gt;
+&lt;p&gt;この記事で取り上げた内容の多くは &lt;a href='#vincent2011connection' id='ref-vincent2011connection-1'&gt;[4]&lt;/a&gt; と &lt;a href='#hyvarinen05a' id='ref-hyvarinen05a-1'&gt;[5]&lt;/a&gt; を参考にしました．今回は省略した Denoising Autoencoder や独立成分分析との関係についても述べられているので詳細が知りたい方はどうぞ．日本語での解説としては，PFNの得居さんの&lt;a href="http://www.beam2d.net/blog/2013/12/23/dae-and-its-generalization"&gt;この記事&lt;/a&gt;が参考になるかと思います．&lt;/p&gt;
+&lt;h2&gt;参考文献&lt;/h2&gt;
+&lt;p id='ho2020denoising'&gt;[1] Jonathan Ho, Ajay Jain, and Pieter Abbeel.
+&lt;a href="https://papers.nips.cc/paper/2020/file/4c5bcfec8584af0d967f1ab10179ca4b-Paper.pdf"&gt;Denoising diffusion probabilistic models&lt;/a&gt;
+&lt;em&gt;Advances in Neural Information Processing Systems&lt;/em&gt;, 2020. &lt;/p&gt;
+&lt;p id='song2020score'&gt;[2] Yang Song, Jascha Sohl-Dickstein, Diederik&amp;nbsp;P Kingma, Abhishek Kumar, Stefano Ermon, and Ben Poole.
+&lt;a href="https://arxiv.org/pdf/2011.13456"&gt;Score-based generative modeling through stochastic differential equations&lt;/a&gt;
+&lt;em&gt;arXiv preprint arXiv:2011.13456&lt;/em&gt;, 2020. &lt;/p&gt;
+&lt;p id='pang2020efficient'&gt;[3] Tianyu Pang, Taufik Xu, Chongxuan Li, Yang Song, Stefano Ermon, and Jun Zhu.
+&lt;a href="https://papers.nips.cc/paper/2020/file/de6b1cf3fb0a3aa1244d30f7b8c29c41-Paper.pdf"&gt;Efficient learning of generative models via finite-difference score matching&lt;/a&gt;
+&lt;em&gt;Advances in Neural Information Processing Systems&lt;/em&gt;, 2020. &lt;/p&gt;
+&lt;p id='vincent2011connection'&gt;[4] Pascal Vincent.
+&lt;a href="http://www.iro.umontreal.ca/~vincentp/Publications/smdae_techreport.pdf"&gt;A connection between score matching and denoising autoencoders&lt;/a&gt;
+&lt;em&gt;Neural computation&lt;/em&gt;, 23(7):1661–1674, 2011. &lt;/p&gt;
+&lt;p id='hyvarinen05a'&gt;[5] Aapo Hyv&lt;span class="bibtex-protected"&gt;&lt;span class="bibtex-protected"&gt;ä&lt;/span&gt;&lt;/span&gt;rinen.
+&lt;a href="https://jmlr.org/papers/volume6/hyvarinen05a/hyvarinen05a.pdf"&gt;Estimation of non-normalized statistical models by score matching&lt;/a&gt;
+&lt;em&gt;Journal of Machine Learning Research&lt;/em&gt;, 6(24):695&amp;ndash;709, 2005. &lt;/p&gt;
+&lt;p id='grathwohl2018ffjord'&gt;[6] Will Grathwohl, Ricky&amp;nbsp;TQ Chen, Jesse Bettencourt, Ilya Sutskever, and David Duvenaud.
+&lt;a href="https://arxiv.org/pdf/1810.01367"&gt;Ffjord: free-form continuous dynamics for scalable reversible generative models&lt;/a&gt;
+&lt;em&gt;arXiv preprint arXiv:1810.01367&lt;/em&gt;, 2018. &lt;/p&gt;
+
+&lt;div class="footnote"&gt;
+&lt;hr&gt;
+&lt;ol&gt;
+&lt;li id="fn:5"&gt;
+&lt;p&gt;統計学では一般に，パラメータによる対数尤度の勾配 &lt;span class="math"&gt;\(\nabla_\theta \log p(x ; \theta)\)&lt;/span&gt; をスコア関数と呼ぶが，スタインのスコア関数は &lt;span class="math"&gt;\(x\)&lt;/span&gt; で勾配を取ったものである．&amp;#160;&lt;a class="footnote-backref" href="#fnref:5" title="Jump back to footnote 1 in the text"&gt;&amp;#8617;&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;li id="fn:1"&gt;
+&lt;p&gt;このような手法は&lt;a href="https://ja.wikipedia.org/wiki/%E3%82%AB%E3%83%BC%E3%83%8D%E3%83%AB%E5%AF%86%E5%BA%A6%E6%8E%A8%E5%AE%9A"&gt;カーネル密度推定&lt;/a&gt;として知られていて，多くの場合ガウス分布による平滑化を行う．&amp;#160;&lt;a class="footnote-backref" href="#fnref:1" title="Jump back to footnote 2 in the text"&gt;&amp;#8617;&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;li id="fn:4"&gt;
+&lt;p&gt;&lt;span class="math"&gt;\(\log p(X ; \theta)\)&lt;/span&gt; および &lt;span class="math"&gt;\(\log p(X)\)&lt;/span&gt; が微分可能かつ，勾配のノルムの &lt;span class="math"&gt;\(p(x)\)&lt;/span&gt; による期待値が有限で， &lt;span class="math"&gt;\(\lim\limits_{\norm{x}\to\infty} s(x ; \theta)p(x) = 0\)&lt;/span&gt;&amp;#160;&lt;a class="footnote-backref" href="#fnref:4" title="Jump back to footnote 3 in the text"&gt;&amp;#8617;&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;li id="fn:2"&gt;
+&lt;p&gt;&lt;span class="math"&gt;\(\nabla_x \log p(x ; \theta)\)&lt;/span&gt; の計算グラフの大きさが &lt;span class="math"&gt;\(O(HD_X)\)&lt;/span&gt; であり， &lt;span class="math"&gt;\(\tr\par{\nabla_x \nabla_x^\tp \log p(x ; \theta)}\)&lt;/span&gt; の計算グラフの大きさが &lt;span class="math"&gt;\(O(HD_X^2)\)&lt;/span&gt; だから．&amp;#160;&lt;a class="footnote-backref" href="#fnref:2" title="Jump back to footnote 4 in the text"&gt;&amp;#8617;&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;li id="fn:3"&gt;
+&lt;p&gt;このように，ベクトルの勾配行列のトレースをノイズ &lt;span class="math"&gt;\(v\)&lt;/span&gt; との積を用いて表した式をモンテカルロ法で近似する手法は，Hutchinton&amp;#8217;s trace estimatorと呼ばれていて，&lt;span class="caps"&gt;FFJORD&lt;/span&gt; &lt;a href='#grathwohl2018ffjord' id='ref-grathwohl2018ffjord-1'&gt;[6]&lt;/a&gt; などでも使われている手法である．&amp;#160;&lt;a class="footnote-backref" href="#fnref:3" title="Jump back to footnote 5 in the text"&gt;&amp;#8617;&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/div&gt;</content><category term="機械学習"></category><category term="MachineLearning"></category><category term="ScoreMatching"></category></entry></feed>
